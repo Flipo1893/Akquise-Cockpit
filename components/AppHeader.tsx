@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { signOut } from "@/app/actions/contacts";
 import Clock from "./Clock";
 
 const NAV_ITEMS = [
@@ -11,7 +12,15 @@ const NAV_ITEMS = [
   { href: "/import", label: "Import" },
 ];
 
-export default function AppHeader() {
+/** "sabine.muster@firma.ch" → "SM", als Fallback zwei Zeichen aus dem Namen. */
+function initials(email: string): string {
+  const local = email.split("@")[0] ?? "";
+  const parts = local.split(/[._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return local.slice(0, 2).toUpperCase() || "??";
+}
+
+export default function AppHeader({ email }: { email: string }) {
   const pathname = usePathname();
 
   return (
@@ -45,9 +54,20 @@ export default function AppHeader() {
         </div>
         <div className="flex items-center gap-3 text-sm text-mute">
           <Clock />
-          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink text-xs font-semibold text-paper">
-            MK
+          <span
+            title={email}
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-ink text-xs font-semibold text-paper"
+          >
+            {initials(email)}
           </span>
+          <form action={signOut}>
+            <button
+              type="submit"
+              className="rounded-md border border-transparent px-2 py-1 text-xs text-mute transition-colors hover:bg-paper-2 hover:text-ink"
+            >
+              Abmelden
+            </button>
+          </form>
         </div>
       </div>
     </header>

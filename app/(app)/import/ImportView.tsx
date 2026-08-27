@@ -1,12 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import AppFooter from "@/components/AppFooter";
-import AppHeader from "@/components/AppHeader";
-import { storeFor } from "@/lib/entityStore";
-import { resetAllData } from "@/lib/storage";
-import type { Entity, Priority } from "@/lib/types";
-import { buttonPrimaryClass, buttonSecondaryClass, cardClass, inputClass, selectClass } from "@/lib/ui";
+import { useMemo, useState, useTransition } from "react";
+import { importContacts } from "@/app/actions/contacts";
+import { STATUS_KOOP, STATUS_KUNDEN } from "@/lib/status";
+import type { Entity, EntityTyp, Priority } from "@/lib/types";
+import {
+  buttonPrimaryClass,
+  buttonSecondaryClass,
+  cardClass,
+  inputClass,
+  selectClass,
+} from "@/lib/ui";
 
 type Target = "kunden" | "koop";
 
@@ -16,14 +20,14 @@ const COLS_KUNDEN = [
 ];
 const COLS_KOOP = [...COLS_KUNDEN, "art", "wirBekommen", "partnerBekommt"];
 
-const STATUS_KUNDEN_KEYS = [
-  "Neu", "Recherchiert", "Kontaktiert", "Antwort erhalten", "Termin vereinbart",
-  "Angebot draussen", "Gewonnen", "Verloren", "Kein Interesse", "Später nochmal",
-];
-const STATUS_KOOP_KEYS = [
-  "Neu", "Kontaktiert", "Im Gespräch", "Vereinbarung in Arbeit",
-  "Aktive Kooperation", "Abgelehnt", "Auf Eis",
-];
+const LEGACY_KEYS: Record<Target, string> = {
+  kunden: "crm_kunden",
+  koop: "crm_koop",
+};
+
+function typFor(target: Target): EntityTyp {
+  return target === "koop" ? "kooperation" : "kunde";
+}
 
 function buildTemplate(target: Target): string {
   const cols = target === "koop" ? COLS_KOOP : COLS_KUNDEN;
@@ -55,36 +59,80 @@ function parseCsvLine(line: string): string[] {
   return out.map((s) => s.trim());
 }
 
-export default function ImportPage() {
+/** Baut ein Entity aus einer CSV-Zeile und normalisiert Status und Priorität. */
+function rowToEntity(row: Record<string, string>, target: Target): Entity {
+  const typ = typFor(target);
+  const statusKeys = (target === "koop" ? STATUS_KOOP : STATUS_KUNDEN).map((s) => s.key);
+  const now = new Date().toISOString();
+
+  let status = row.status || "Neu";
+  if (!statusKeys.includes(status)) status = "Neu";
+
+  let prio = (row["priorität"] || row["prioritat"] || "mittel").toLowerCase();
+  if (!["hoch", "mittel", "tief"].includes(prio)) prio = "mittel";
+
+  return {
+    id: "",
+    typ,
+    firma: row.firma,
+    kontakt: row.kontakt || "",
+    rolle: row.rolle || "",
+    email: row.email || "",
+    telefon: row.telefon || "",
+    website: row.website || "",
+    adresse: row.adresse || "",
+    plz: row.plz || "",
+    ort: row.ort || "",
+    kanton: row.kanton || "",
+    branche: row.branche || "",
+    quelle: row.quelle || "",
+    status,
+    priorität: prio as Priority,
+    tags: row.tags ? row.tags.split(";").map((t) => t.trim()).filter(Boolean) : [],
+    notizen: row.notizen || "",
+    erstelltAm: now,
+    geändertAm: now,
+    history: [],
+    nextAction: null,
+    statusHistory: [{ status, datum: now }],
+    ...(typ === "kooperation"
+      ? {
+          art: row.art || "",
+          wirBekommen: row.wirbekommen || "",
+          partnerBekommt: row.partnerbekommt || "",
+        }
+      : {}),
+  };
+}
+
+export default function ImportView() {
   const [target, setTarget] = useState<Target>("kunden");
   const [csv, setCsv] = useState("");
-  const [result, setResult] = useState<{ added: number; skipped: number } | null>(null);
+  const [meldung, setMeldung] = useState<string | null>(null);
+  const [fehler, setFehler] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
 
   const cols = target === "koop" ? COLS_KOOP : COLS_KUNDEN;
-  const downloadHref = useMemo(() => {
-    return "data:text/csv;charset=utf-8," + encodeURIComponent(buildTemplate(target));
-  }, [target]);
+  const downloadHref = useMemo(
+    () => "data:text/csv;charset=utf-8," + encodeURIComponent(buildTemplate(target)),
+    [target],
+  );
 
   function handleImport() {
     const raw = csv.trim();
     if (!raw) {
-      setResult({ added: 0, skipped: 0 });
+      setFehler("Bitte zuerst CSV-Daten einfügen.");
+      setMeldung(null);
       return;
     }
 
     const lines = raw.split("\n").map((l) => l.trim()).filter((l) => l.length);
     const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
-    const rows = lines.slice(1);
-    const statusKeys = target === "koop" ? STATUS_KOOP_KEYS : STATUS_KUNDEN_KEYS;
-    const typ = target === "koop" ? "kooperation" : "kunde";
-    const store = storeFor(typ);
-    const list = [...store.getSnapshot()];
 
-    let added = 0;
     let skipped = 0;
+    const entities: Entity[] = [];
 
-    rows.forEach((line) => {
-      if (!line) return;
+    lines.slice(1).forEach((line) => {
       const values = parseCsvLine(line);
       const row: Record<string, string> = {};
       headers.forEach((h, i) => (row[h] = values[i] || ""));
@@ -92,63 +140,78 @@ export default function ImportPage() {
         skipped++;
         return;
       }
-
-      const now = new Date().toISOString();
-      let status = row.status || "Neu";
-      if (!statusKeys.includes(status)) status = "Neu";
-      let prio = (row["priorität"] || row["prioritat"] || "mittel").toLowerCase();
-      if (!["hoch", "mittel", "tief"].includes(prio)) prio = "mittel";
-
-      const entry: Entity = {
-        id: crypto.randomUUID(),
-        typ,
-        firma: row.firma,
-        kontakt: row.kontakt || "",
-        rolle: row.rolle || "",
-        email: row.email || "",
-        telefon: row.telefon || "",
-        website: row.website || "",
-        adresse: row.adresse || "",
-        plz: row.plz || "",
-        ort: row.ort || "",
-        kanton: row.kanton || "",
-        branche: row.branche || "",
-        quelle: row.quelle || "",
-        status,
-        priorität: prio as Priority,
-        tags: row.tags ? row.tags.split(";").map((t) => t.trim()).filter(Boolean) : [],
-        notizen: row.notizen || "",
-        erstelltAm: now,
-        geändertAm: now,
-        history: [],
-        nextAction: null,
-        statusHistory: [{ status, datum: now }],
-      };
-      if (typ === "kooperation") {
-        entry.art = row.art || "";
-        entry.wirBekommen = row.wirbekommen || "";
-        entry.partnerBekommt = row.partnerbekommt || "";
-      }
-      list.push(entry);
-      added++;
+      entities.push(rowToEntity(row, target));
     });
 
-    store.set(list);
-    setResult({ added, skipped });
-    setCsv("");
+    startTransition(async () => {
+      const res = await importContacts(typFor(target), entities);
+      if (!res.ok) {
+        setFehler(res.error ?? "Import fehlgeschlagen.");
+        setMeldung(null);
+        return;
+      }
+      setFehler(null);
+      setMeldung(
+        `${res.added} Einträge importiert` +
+          (skipped ? `, ${skipped} übersprungen (Firma fehlt)` : "") +
+          `. Ziel: ${target === "koop" ? "Kooperationen" : "Kunden"}.`,
+      );
+      setCsv("");
+    });
   }
 
-  function handleReset() {
-    if (!confirm("Alle lokalen Daten wirklich löschen und Beispieldaten neu laden?")) return;
-    resetAllData();
-    window.location.href = "/";
+  /** Einmalige Übernahme der Daten aus der localStorage-Version des Prototyps. */
+  function handleLegacyImport() {
+    let kunden: Entity[] = [];
+    let koop: Entity[] = [];
+    try {
+      kunden = JSON.parse(localStorage.getItem(LEGACY_KEYS.kunden) || "[]");
+      koop = JSON.parse(localStorage.getItem(LEGACY_KEYS.koop) || "[]");
+    } catch {
+      setFehler("Die lokalen Daten liessen sich nicht lesen.");
+      return;
+    }
+
+    if (!kunden.length && !koop.length) {
+      setFehler("In diesem Browser sind keine alten Daten gespeichert.");
+      setMeldung(null);
+      return;
+    }
+
+    if (
+      !confirm(
+        `${kunden.length} Kunden und ${koop.length} Kooperationen in dein Konto übernehmen?`,
+      )
+    ) {
+      return;
+    }
+
+    startTransition(async () => {
+      const [resK, resP] = await Promise.all([
+        importContacts("kunde", kunden),
+        importContacts("kooperation", koop),
+      ]);
+
+      if (!resK.ok || !resP.ok) {
+        setFehler(resK.error ?? resP.error ?? "Übernahme fehlgeschlagen.");
+        return;
+      }
+
+      // Erst nach erfolgreicher Übernahme lokal aufräumen.
+      localStorage.removeItem(LEGACY_KEYS.kunden);
+      localStorage.removeItem(LEGACY_KEYS.koop);
+      localStorage.removeItem("crm_seeded");
+
+      setFehler(null);
+      setMeldung(
+        `${resK.added} Kunden und ${resP.added} Kooperationen übernommen. ` +
+          `Die lokale Kopie wurde entfernt.`,
+      );
+    });
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <AppHeader />
-
-      <main className="mx-auto w-full max-w-[1000px] flex-1 px-5 py-6">
+    <main className="mx-auto w-full max-w-[1000px] flex-1 px-5 py-6">
         <div className="mb-6">
           <h1 className="text-xl font-semibold tracking-tight">Import</h1>
           <p className="mt-0.5 text-sm text-mute">
@@ -180,8 +243,12 @@ export default function ImportPage() {
                 className={`${inputClass} font-mono text-xs leading-relaxed`}
               />
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button onClick={handleImport} className={buttonPrimaryClass}>
-                  Importieren
+                <button
+                  onClick={handleImport}
+                  disabled={pending}
+                  className={`${buttonPrimaryClass} disabled:opacity-60`}
+                >
+                  {pending ? "Importiert…" : "Importieren"}
                 </button>
                 <button
                   onClick={() => setCsv(buildTemplate(target))}
@@ -197,18 +264,14 @@ export default function ImportPage() {
                   Vorlage herunterladen
                 </a>
               </div>
-              {result && (
+              {meldung && (
                 <div className="mt-4 rounded-md border border-line bg-paper-2 px-3 py-2 text-sm">
-                  <span className="font-medium">{result.added}</span> Einträge importiert
-                  {result.skipped ? (
-                    <>
-                      , <span className="text-accent">{result.skipped}</span> übersprungen
-                      (Firma fehlt)
-                    </>
-                  ) : (
-                    ""
-                  )}
-                  . Ziel: {target === "koop" ? "Kooperationen" : "Kunden"}.
+                  {meldung}
+                </div>
+              )}
+              {fehler && (
+                <div className="mt-4 rounded-md border border-line bg-accent-soft px-3 py-2 text-sm text-accent-2">
+                  {fehler}
                 </div>
               )}
             </div>
@@ -226,6 +289,7 @@ export default function ImportPage() {
                 ))}
               </div>
             </section>
+
             <section className={`${cardClass} p-4`}>
               <h3 className="mb-2 text-sm font-semibold">Hinweise</h3>
               <ul className="list-disc space-y-1.5 pl-4 text-xs text-mute">
@@ -233,25 +297,26 @@ export default function ImportPage() {
                 <li>Fehlender Status wird zu &quot;Neu&quot;.</li>
                 <li>Fehlende Priorität wird zu &quot;mittel&quot;.</li>
                 <li>Zeilen werden ergänzt, bestehende Daten bleiben erhalten.</li>
+                <li>Maximal 2000 Zeilen pro Import.</li>
               </ul>
             </section>
+
             <section className={`${cardClass} p-4`}>
-              <h3 className="mb-2 text-sm font-semibold text-accent">Daten zurücksetzen</h3>
+              <h3 className="mb-2 text-sm font-semibold">Alte lokale Daten</h3>
               <p className="mb-3 text-xs text-mute">
-                Löscht alle lokalen Kunden- und Kooperationsdaten und lädt die Beispieldaten neu.
+                Hast du im alten Prototyp Kontakte erfasst, liegen die noch im Speicher
+                dieses Browsers. Hier übernimmst du sie einmalig in dein Konto.
               </p>
               <button
-                onClick={handleReset}
-                className={`w-full ${buttonSecondaryClass} text-accent`}
+                onClick={handleLegacyImport}
+                disabled={pending}
+                className={`w-full ${buttonSecondaryClass} disabled:opacity-60`}
               >
-                Zurücksetzen
+                Lokale Daten übernehmen
               </button>
             </section>
           </aside>
         </div>
-      </main>
-
-      <AppFooter />
-    </div>
+    </main>
   );
 }

@@ -12,13 +12,3 @@ export function fmtTime(d: Date): string {
 export function isoDay(d: string | Date): string {
   return new Date(d).toISOString().slice(0, 10);
 }
-
-export function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString();
-}
-
-export function daysFromNow(n: number): string {
-  return daysAgo(-n);
-}

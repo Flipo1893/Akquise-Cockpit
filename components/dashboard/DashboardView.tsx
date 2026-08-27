@@ -2,20 +2,25 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import AppFooter from "@/components/AppFooter";
-import AppHeader from "@/components/AppHeader";
 import DueList, { type DueItem } from "@/components/dashboard/DueList";
 import KpiGrid, { computeKpi } from "@/components/dashboard/KpiGrid";
 import PeriodSwitch from "@/components/dashboard/PeriodSwitch";
 import StatusDistribution from "@/components/dashboard/StatusDistribution";
-import { useEntityList } from "@/lib/entityStore";
 import { isoDay } from "@/lib/format";
 import { STATUS_KOOP, STATUS_KUNDEN } from "@/lib/status";
+import type { Entity } from "@/lib/types";
 import { cardClass } from "@/lib/ui";
+import { useContacts } from "@/lib/useContacts";
 
-export default function DashboardPage() {
-  const kunden = useEntityList("kunde");
-  const koop = useEntityList("kooperation");
+export default function DashboardView({
+  initialKunden,
+  initialKoop,
+}: {
+  initialKunden: Entity[];
+  initialKoop: Entity[];
+}) {
+  const { list: kunden } = useContacts("kunde", initialKunden);
+  const { list: koop } = useContacts("kooperation", initialKoop);
   const [periodDays, setPeriodDays] = useState(30);
 
   const kpiKunden = useMemo(() => computeKpi(kunden, periodDays), [kunden, periodDays]);
@@ -35,10 +40,7 @@ export default function DashboardPage() {
   }, [kunden, koop]);
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <AppHeader />
-
-      <main className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-6">
+    <main className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-6">
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
@@ -101,9 +103,6 @@ export default function DashboardPage() {
             <DueList items={overList} emptyLabel="Keine Überfälligen." />
           </section>
         </div>
-      </main>
-
-      <AppFooter />
-    </div>
+    </main>
   );
 }
