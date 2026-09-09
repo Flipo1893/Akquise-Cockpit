@@ -8,15 +8,26 @@ import DueList, { type DueItem } from "@/components/dashboard/DueList";
 import KpiGrid, { computeKpi } from "@/components/dashboard/KpiGrid";
 import PeriodSwitch from "@/components/dashboard/PeriodSwitch";
 import StatusDistribution from "@/components/dashboard/StatusDistribution";
-import { useEntityList } from "@/lib/entityStore";
+import StateBanner from "@/components/ui/StateBanner";
+import { reloadEntities, useEntityState } from "@/lib/entityStore";
 import { isoDay } from "@/lib/format";
 import { STATUS_KOOP, STATUS_KUNDEN } from "@/lib/status";
 import { cardClass } from "@/lib/ui";
 
 export default function DashboardPage() {
-  const kunden = useEntityList("kunde");
-  const koop = useEntityList("kooperation");
+  const kundenState = useEntityState("kunde");
+  const koopState = useEntityState("kooperation");
+  const kunden = kundenState.entities;
+  const koop = koopState.entities;
   const [periodDays, setPeriodDays] = useState(30);
+
+  const loading = kundenState.loading || koopState.loading;
+  const error = kundenState.error ?? koopState.error;
+
+  function retry() {
+    void reloadEntities("kunde");
+    void reloadEntities("kooperation");
+  }
 
   const kpiKunden = useMemo(() => computeKpi(kunden, periodDays), [kunden, periodDays]);
   const kpiKoop = useMemo(() => computeKpi(koop, periodDays), [koop, periodDays]);
@@ -48,6 +59,8 @@ export default function DashboardPage() {
           </div>
           <PeriodSwitch value={periodDays} onChange={setPeriodDays} />
         </div>
+
+        <StateBanner loading={loading} error={error} onRetry={retry} />
 
         <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <section className={cardClass}>

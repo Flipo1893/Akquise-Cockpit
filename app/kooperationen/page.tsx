@@ -6,89 +6,74 @@ import AppHeader from "@/components/AppHeader";
 import ListToolbar from "@/components/ListToolbar";
 import Modal from "@/components/ui/Modal";
 import { PriorityBadge, StatusBadge } from "@/components/ui/badges";
-import { koopStore, useEntityList } from "@/lib/entityStore";
+import StateBanner from "@/components/ui/StateBanner";
+import {
+  createEntity,
+  deleteEntity,
+  reloadEntities,
+  updateEntity,
+  useEntityState,
+} from "@/lib/entityStore";
 import { fmtDate } from "@/lib/format";
 import { STATUS_KOOP, statusColor } from "@/lib/status";
-import type { Entity, Priority } from "@/lib/types";
+import type { Entity } from "@/lib/types";
 import { useEntityFilters } from "@/lib/useEntityFilters";
 import { buttonPrimaryClass, buttonSecondaryClass, cardClass, inputClass, selectClass } from "@/lib/ui";
 
 export default function KooperationenPage() {
-  const all = useEntityList("kooperation");
+  const { entities: all, loading, error } = useEntityState("kooperation");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const { search, setSearch, status, setStatus, priority, setPriority, filtered } =
     useEntityFilters(all);
 
-  function updateEntity(id: string, patch: Partial<Entity>) {
-    const list = koopStore.getSnapshot();
-    const idx = list.findIndex((c) => c.id === id);
-    if (idx < 0) return;
-    const next = [...list];
-    next[idx] = { ...next[idx], ...patch };
-    koopStore.set(next);
-  }
-
-  function deleteEntity(id: string, firma: string) {
-    if (!confirm(`${firma} wirklich löschen?`)) return;
-    koopStore.set(koopStore.getSnapshot().filter((c) => c.id !== id));
-    setExpandedId(null);
+  // Jede Änderung geht über den Server. Scheitert sie, bleibt die Anzeige auf
+  // dem letzten bestätigten Stand und der Fehler wird sichtbar gemacht.
+  async function run(action: () => Promise<void>): Promise<void> {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await action();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Aktion fehlgeschlagen.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function handleStatusChange(id: string, newStatus: string) {
-    const now = new Date().toISOString();
-    const entity = all.find((c) => c.id === id);
-    if (!entity) return;
-    updateEntity(id, {
-      status: newStatus,
-      geändertAm: now,
-      statusHistory: [...entity.statusHistory, { status: newStatus, datum: now }],
-    });
+    // Status-Historie und geändertAm pflegt der Server.
+    void run(() => updateEntity("kooperation", id, { status: newStatus }));
   }
 
   function handleNextDate(id: string, dateValue: string) {
     if (!dateValue) return;
-    updateEntity(id, {
-      nextAction: { beschreibung: "Follow-up", datum: new Date(dateValue).toISOString() },
+    void run(() =>
+      updateEntity("kooperation", id, {
+        nextAction: { beschreibung: "Follow-up", datum: new Date(dateValue).toISOString() },
+      }),
+    );
+  }
+
+  function handleDelete(id: string, firma: string) {
+    if (!confirm(`${firma} wirklich löschen?`)) return;
+    void run(async () => {
+      await deleteEntity("kooperation", id);
+      setExpandedId(null);
     });
   }
 
   function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const now = new Date().toISOString();
-    const status = String(fd.get("status") || "Neu");
-    const entry: Entity = {
-      id: crypto.randomUUID(),
-      typ: "kooperation",
-      firma: String(fd.get("firma") || ""),
-      kontakt: String(fd.get("kontakt") || ""),
-      rolle: String(fd.get("rolle") || ""),
-      email: String(fd.get("email") || ""),
-      telefon: String(fd.get("telefon") || ""),
-      website: String(fd.get("website") || ""),
-      adresse: "",
-      plz: "",
-      ort: String(fd.get("ort") || ""),
-      kanton: "",
-      branche: String(fd.get("branche") || ""),
-      quelle: "",
-      status,
-      priorität: (fd.get("priorität") as Priority) || "mittel",
-      tags: [],
-      notizen: String(fd.get("notizen") || ""),
-      erstelltAm: now,
-      geändertAm: now,
-      history: [],
-      nextAction: null,
-      statusHistory: [{ status, datum: now }],
-      art: String(fd.get("art") || ""),
-      wirBekommen: String(fd.get("wirBekommen") || ""),
-      partnerBekommt: String(fd.get("partnerBekommt") || ""),
-    };
-    koopStore.set([...koopStore.getSnapshot(), entry]);
-    e.currentTarget.reset();
-    setModalOpen(false);
+    const form = e.currentTarget;
+    const draft = Object.fromEntries(new FormData(form)) as Record<string, string>;
+    void run(async () => {
+      await createEntity("kooperation", draft);
+      form.reset();
+      setModalOpen(false);
+    });
   }
 
   return (
@@ -118,6 +103,13 @@ export default function KooperationenPage() {
           statusList={STATUS_KOOP}
         />
 
+        <StateBanner
+          loading={loading}
+          error={error}
+          onRetry={() => void reloadEntities("kooperation")}
+        />
+        {actionError && <StateBanner loading={false} error={actionError} />}
+
         <section className={`${cardClass} overflow-x-auto`}>
           <table className="w-full min-w-[880px] border-collapse text-sm">
             <thead className="border-b border-line bg-paper-2 text-xs uppercase tracking-wide text-mute">
@@ -141,12 +133,12 @@ export default function KooperationenPage() {
                   onToggle={() => setExpandedId(expandedId === c.id ? null : c.id)}
                   onStatusChange={(v) => handleStatusChange(c.id, v)}
                   onNextDate={(v) => handleNextDate(c.id, v)}
-                  onDelete={() => deleteEntity(c.id, c.firma)}
+                  onDelete={() => handleDelete(c.id, c.firma)}
                 />
               ))}
             </tbody>
           </table>
-          {filtered.length === 0 && (
+          {!loading && !error && filtered.length === 0 && (
             <div className="px-4 py-10 text-center text-sm text-mute">
               Keine Kooperationen gefunden.
             </div>
@@ -238,8 +230,8 @@ export default function KooperationenPage() {
             >
               Abbrechen
             </button>
-            <button type="submit" className={buttonPrimaryClass}>
-              Speichern
+            <button type="submit" disabled={busy} className={`${buttonPrimaryClass} disabled:opacity-50`}>
+              {busy ? "Speichert…" : "Speichern"}
             </button>
           </div>
         </form>

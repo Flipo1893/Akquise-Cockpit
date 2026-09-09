@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import AppFooter from "@/components/AppFooter";
 import AppHeader from "@/components/AppHeader";
-import { storeFor } from "@/lib/entityStore";
-import { resetAllData } from "@/lib/storage";
-import type { Entity, Priority } from "@/lib/types";
+import StateBanner from "@/components/ui/StateBanner";
+import { importRows, resetAllData } from "@/lib/entityStore";
+import type { EntityTyp } from "@/lib/types";
 import { buttonPrimaryClass, buttonSecondaryClass, cardClass, inputClass, selectClass } from "@/lib/ui";
 
 type Target = "kunden" | "koop";
@@ -16,14 +17,13 @@ const COLS_KUNDEN = [
 ];
 const COLS_KOOP = [...COLS_KUNDEN, "art", "wirBekommen", "partnerBekommt"];
 
-const STATUS_KUNDEN_KEYS = [
-  "Neu", "Recherchiert", "Kontaktiert", "Antwort erhalten", "Termin vereinbart",
-  "Angebot draussen", "Gewonnen", "Verloren", "Kein Interesse", "Später nochmal",
-];
-const STATUS_KOOP_KEYS = [
-  "Neu", "Kontaktiert", "Im Gespräch", "Vereinbarung in Arbeit",
-  "Aktive Kooperation", "Abgelehnt", "Auf Eis",
-];
+/** CSV-Kopfzeilen werden kleingeschrieben verglichen — diese heissen intern anders. */
+const FIELD_ALIASES: Record<string, string> = {
+  wirbekommen: "wirBekommen",
+  partnerbekommt: "partnerBekommt",
+  prioritat: "priorität",
+  prioritaet: "priorität",
+};
 
 function buildTemplate(target: Target): string {
   const cols = target === "koop" ? COLS_KOOP : COLS_KUNDEN;
@@ -56,8 +56,11 @@ function parseCsvLine(line: string): string[] {
 }
 
 export default function ImportPage() {
+  const router = useRouter();
   const [target, setTarget] = useState<Target>("kunden");
   const [csv, setCsv] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ added: number; skipped: number } | null>(null);
 
   const cols = target === "koop" ? COLS_KOOP : COLS_KUNDEN;
@@ -65,83 +68,53 @@ export default function ImportPage() {
     return "data:text/csv;charset=utf-8," + encodeURIComponent(buildTemplate(target));
   }, [target]);
 
-  function handleImport() {
-    const raw = csv.trim();
-    if (!raw) {
+  /**
+   * Die CSV wird im Browser geparst, geschrieben wird serverseitig. Status,
+   * Priorität und Tags normalisiert die API — hier entstehen nur rohe Zeilen.
+   */
+  function parseRows(raw: string): Record<string, string>[] {
+    const lines = raw.split("\n").map((l) => l.trim()).filter((l) => l.length);
+    if (lines.length < 2) return [];
+    const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+    return lines.slice(1).map((line) => {
+      const values = parseCsvLine(line);
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => (row[FIELD_ALIASES[h] ?? h] = values[i] || ""));
+      return row;
+    });
+  }
+
+  async function handleImport() {
+    const rows = parseRows(csv.trim());
+    setError(null);
+    if (rows.length === 0) {
       setResult({ added: 0, skipped: 0 });
       return;
     }
-
-    const lines = raw.split("\n").map((l) => l.trim()).filter((l) => l.length);
-    const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
-    const rows = lines.slice(1);
-    const statusKeys = target === "koop" ? STATUS_KOOP_KEYS : STATUS_KUNDEN_KEYS;
-    const typ = target === "koop" ? "kooperation" : "kunde";
-    const store = storeFor(typ);
-    const list = [...store.getSnapshot()];
-
-    let added = 0;
-    let skipped = 0;
-
-    rows.forEach((line) => {
-      if (!line) return;
-      const values = parseCsvLine(line);
-      const row: Record<string, string> = {};
-      headers.forEach((h, i) => (row[h] = values[i] || ""));
-      if (!row.firma) {
-        skipped++;
-        return;
-      }
-
-      const now = new Date().toISOString();
-      let status = row.status || "Neu";
-      if (!statusKeys.includes(status)) status = "Neu";
-      let prio = (row["priorität"] || row["prioritat"] || "mittel").toLowerCase();
-      if (!["hoch", "mittel", "tief"].includes(prio)) prio = "mittel";
-
-      const entry: Entity = {
-        id: crypto.randomUUID(),
-        typ,
-        firma: row.firma,
-        kontakt: row.kontakt || "",
-        rolle: row.rolle || "",
-        email: row.email || "",
-        telefon: row.telefon || "",
-        website: row.website || "",
-        adresse: row.adresse || "",
-        plz: row.plz || "",
-        ort: row.ort || "",
-        kanton: row.kanton || "",
-        branche: row.branche || "",
-        quelle: row.quelle || "",
-        status,
-        priorität: prio as Priority,
-        tags: row.tags ? row.tags.split(";").map((t) => t.trim()).filter(Boolean) : [],
-        notizen: row.notizen || "",
-        erstelltAm: now,
-        geändertAm: now,
-        history: [],
-        nextAction: null,
-        statusHistory: [{ status, datum: now }],
-      };
-      if (typ === "kooperation") {
-        entry.art = row.art || "";
-        entry.wirBekommen = row.wirbekommen || "";
-        entry.partnerBekommt = row.partnerbekommt || "";
-      }
-      list.push(entry);
-      added++;
-    });
-
-    store.set(list);
-    setResult({ added, skipped });
-    setCsv("");
+    setBusy(true);
+    try {
+      const typ: EntityTyp = target === "koop" ? "kooperation" : "kunde";
+      setResult(await importRows(typ, rows));
+      setCsv("");
+    } catch (err) {
+      setResult(null);
+      setError(err instanceof Error ? err.message : "Import fehlgeschlagen.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function handleReset() {
-    if (!confirm("Alle lokalen Daten wirklich löschen und Beispieldaten neu laden?")) return;
-    resetAllData();
-    window.location.href = "/";
+  async function handleReset() {
+    if (!confirm("Alle Daten wirklich löschen und Beispieldaten neu laden?")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await resetAllData();
+      router.push("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Zurücksetzen fehlgeschlagen.");
+      setBusy(false);
+    }
   }
 
   return (
@@ -180,8 +153,12 @@ export default function ImportPage() {
                 className={`${inputClass} font-mono text-xs leading-relaxed`}
               />
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button onClick={handleImport} className={buttonPrimaryClass}>
-                  Importieren
+                <button
+                  onClick={handleImport}
+                  disabled={busy}
+                  className={`${buttonPrimaryClass} disabled:opacity-50`}
+                >
+                  {busy ? "Importiert…" : "Importieren"}
                 </button>
                 <button
                   onClick={() => setCsv(buildTemplate(target))}
@@ -197,6 +174,7 @@ export default function ImportPage() {
                   Vorlage herunterladen
                 </a>
               </div>
+              {error && <div className="mt-4"><StateBanner loading={false} error={error} /></div>}
               {result && (
                 <div className="mt-4 rounded-md border border-line bg-paper-2 px-3 py-2 text-sm">
                   <span className="font-medium">{result.added}</span> Einträge importiert
@@ -242,7 +220,8 @@ export default function ImportPage() {
               </p>
               <button
                 onClick={handleReset}
-                className={`w-full ${buttonSecondaryClass} text-accent`}
+                disabled={busy}
+                className={`w-full ${buttonSecondaryClass} text-accent disabled:opacity-50`}
               >
                 Zurücksetzen
               </button>
