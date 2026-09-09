@@ -1,5 +1,4 @@
 import { daysAgo, daysFromNow } from "./format";
-import { KEY_SEEDED, saveKunden, saveKoop } from "./storage";
 import type { Entity, HistoryEntry, Priority } from "./types";
 
 function mk(
@@ -99,10 +98,12 @@ function mkK(
   return c;
 }
 
-export function seedIfNeeded(): void {
-  if (typeof window === "undefined") return;
-  if (localStorage.getItem(KEY_SEEDED)) return;
-
+/**
+ * Beispieldatensatz für eine frische Datenbank. Bewusst eine Funktion und
+ * keine Konstante: die Datumsangaben sind relativ zu "heute" und müssen zum
+ * Zeitpunkt des Seedings berechnet werden.
+ */
+export function buildSeedEntities(): Entity[] {
   const kunden: Entity[] = [
     mk("Bergmann Logistik AG", "Nadja Bergmann", "Geschäftsführung", "nadja@bergmann-log.ch", "044 555 12 30", "bergmann-log.ch", "Industriestrasse 4", "8005", "Zürich", "ZH", "Logistik", "LinkedIn", "Termin vereinbart", "hoch", ["Zielkunde", "Warm"], "Sehr interessiert, Termin am 14.06.", 22, 2),
     mk("Solari Bau GmbH", "Marco Solari", "Einkauf", "m.solari@solaribau.ch", "091 220 44 10", "solaribau.ch", "Via Nassa 12", "6900", "Lugano", "TI", "Bau", "Empfehlung", "Kontaktiert", "mittel", ["Neukunde"], "Erste Mail geschickt.", 15, 15),
@@ -122,7 +123,5 @@ export function seedIfNeeded(): void {
     mkK("Grünstadt Verein", "Miriam Huber", "Präsidentin", "miriam@gruenstadt.ch", "", "gruenstadt.ch", "", "6003", "Luzern", "LU", "Verein", "Website", "Vereinbarung in Arbeit", "mittel", ["Non-Profit"], "Sponsoring-Vertrag in Prüfung.", 12, 1, "Sponsoring", "Imagegewinn, lokale Präsenz", "Finanzierung eines Events"),
   ];
 
-  saveKunden(kunden);
-  saveKoop(koop);
-  localStorage.setItem(KEY_SEEDED, "1");
+  return [...kunden, ...koop];
 }
